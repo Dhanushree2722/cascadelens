@@ -1,0 +1,6 @@
+.venv
+.shots
+.pytest_cache
+__pycache__
+tests
+visual_check.js
