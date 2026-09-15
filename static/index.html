@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CascadeLens prototype</title>
+<style>
+  body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f5f7fb;color:#22324a}
+  header{background:#351c75;color:#fff;padding:14px 24px}
+  header h1{margin:0;font-size:22px} header p{margin:4px 0 0;opacity:.85;font-size:14px}
+  main{display:grid;grid-template-columns:300px 1fr;gap:16px;padding:16px 24px}
+  .panel{background:#fff;border:1px solid #dde3ee;border-radius:10px;padding:14px}
+  h2{font-size:15px;margin:0 0 10px;color:#351c75;letter-spacing:.5px}
+  label{display:block;font-size:13px;margin:8px 0 3px}
+  select,input{width:100%;box-sizing:border-box;padding:6px;border:1px solid #c9d2e0;border-radius:6px}
+  .assets{max-height:190px;overflow:auto;border:1px solid #e3e8f0;border-radius:6px;padding:6px;font-size:13px}
+  .assets label{display:flex;gap:6px;margin:3px 0;align-items:center}
+  .assets input{width:auto}
+  button{margin-top:12px;width:100%;padding:9px;border:0;border-radius:6px;background:#351c75;color:#fff;font-weight:600;cursor:pointer}
+  button.secondary{background:#0d9488}
+  svg{width:100%;height:auto;background:#fbfcff;border-radius:8px}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+  .metric{background:#f4f0fa;border-radius:8px;padding:10px}
+  .metric b{display:block;font-size:20px;color:#351c75} .metric span{font-size:12px;color:#59677b}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #e8edf5;vertical-align:top}
+  th{background:#f4f0fa;color:#351c75}
+  .tag{display:inline-block;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600}
+  .operational{background:#dcfce7;color:#166534}.on_backup{background:#fef3c7;color:#92400e}
+  .failed{background:#fee2e2;color:#991b1b}.intervention{background:#ede9fe;color:#5b21b6}
+  .ledger{max-height:260px;overflow:auto}
+  .best{background:#ecfdf5}
+  .explain{background:#f4f0fa;border-radius:8px;padding:12px;font-size:14px;line-height:1.5}
+  .note{font-size:12px;color:#59677b;margin-top:10px}
+  #hour{margin:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>CascadeLens prototype</h1>
+  <p>Synthetic demo city - simulate a failure, trace the cascade, compare interventions. Planner decides.</p>
+</header>
+<main>
+  <section class="panel">
+    <h2>SCENARIO</h2>
+    <label>Hazard</label>
+    <select id="hazard"><option>flood</option><option>storm</option><option>heatwave</option><option>equipment fault</option></select>
+    <label>Severity (affects repair time)</label>
+    <select id="severity"><option>low</option><option selected>medium</option><option>high</option></select>
+    <label>Horizon (hours)</label>
+    <input id="horizon" type="number" min="1" max="168" value="48">
+    <label>Initially failed assets</label>
+    <div class="assets" id="assetList"></div>
+    <button id="run">Run simulation</button>
+    <button id="compare" class="secondary">Compare interventions</button>
+    <p class="note">Interventions are re-simulated from identical starting conditions and ranked with transparent weights (60% unserved service-hours, 30% critical facilities, 10% cost).</p>
+  </section>
+  <section>
+    <div class="panel">
+      <h2>NETWORK STATE <span id="hourLabel" style="font-weight:400;color:#59677b"></span></h2>
+      <svg id="map" viewBox="0 0 900 540"></svg>
+      <input id="hour" type="range" min="0" max="0" value="0">
+      <div class="metrics" id="metrics"></div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <h2>EVIDENCE LEDGER</h2>
+      <div class="ledger"><table id="ledger"><thead><tr><th>#</th><th>Hour</th><th>Asset</th><th>Change</th><th>Cause</th><th>Rule</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="panel" style="margin-top:16px" id="comparePanel" hidden>
+      <h2>INTERVENTION LAB</h2>
+      <table id="options"><thead><tr><th>Rank</th><th>Option</th><th>Unserved service-hours</th><th>Critical outage hours</th><th>Recovery</th><th>Cost</th><th>Score</th></tr></thead><tbody></tbody></table>
+      <h2 style="margin-top:14px">EXPLANATION (template from ledger)</h2>
+      <div class="explain" id="explanation"></div>
+    </div>
+  </section>
+</main>
+<script>
+const colors = {operational:"#22c55e", on_backup:"#f59e0b", failed:"#ef4444"};
+let network, timeline = [];
+
+async function api(path, body) {
+  const res = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)} : {});
+  if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+  return res.json();
+}
+
+function scenario() {
+  const failed = [...document.querySelectorAll("#assetList input:checked")].map(i => i.value);
+  return {hazard: hazard.value, severity: severity.value, horizon_hours: +horizon.value, failed_assets: failed};
+}
+
+function drawMap(states, activeEdges) {
+  const byId = Object.fromEntries(network.assets.map(a => [a.id, a]));
+  const active = new Set(activeEdges || network.edges.filter(e => e.active).map(e => e.id));
+  let out = "";
+  for (const e of network.edges) {
+    const s = byId[e.supplier], d = byId[e.dependent];
+    out += `<line x1="${s.x}" y1="${s.y}" x2="${d.x}" y2="${d.y}" stroke="${active.has(e.id) ? "#94a3b8" : "#cbd5e1"}" stroke-width="${active.has(e.id) ? 1.6 : 1.2}" ${active.has(e.id) ? "" : 'stroke-dasharray="5 5"'}/>`;
+  }
+  for (const a of network.assets) {
+    const st = states ? states[a.id] : "operational";
+    out += `<g><title>${a.name} (${a.type}) - ${st}</title><circle cx="${a.x}" cy="${a.y}" r="16" fill="${colors[st]}" stroke="#fff" stroke-width="2"/>
+      <text x="${a.x}" y="${a.y + 4}" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">${a.id}</text>
+      <text x="${a.x}" y="${a.y + 30}" text-anchor="middle" font-size="10" fill="#475569">${a.name}</text></g>`;
+  }
+  map.innerHTML = out;
+}
+
+function showHour(t) {
+  const snap = timeline[t];
+  hourLabel.textContent = snap ? `- hour ${t}` : "";
+  drawMap(snap && snap.states, snap && snap.active_edges);
+}
+
+function money(n) { return n.toLocaleString(); }
+
+async function run() {
+  try {
+    const r = await api("/api/simulate", scenario());
+    timeline = r.timeline;
+    hour.max = timeline.length - 1; hour.value = 0; showHour(0);
+    const i = r.impact;
+    metrics.innerHTML = [["Unserved service person-hours", money(i.total_unserved_service_person_hours)],
+      ["Critical facility outage hours", i.critical_facility_outage_hours],
+      ["Peak assets failed", i.peak_assets_failed],
+      ["Recovery", i.recovered_within_horizon ? `hour ${i.recovery_hour}` : "not within horizon"]]
+      .map(([k, v]) => `<div class="metric"><b>${v}</b><span>${k}</span></div>`).join("");
+    document.querySelector("#ledger tbody").innerHTML = r.ledger.map(e =>
+      `<tr><td>${e.id}</td><td>${e.t}</td><td>${e.asset_name}</td><td><span class="tag ${e.type === "intervention" ? "intervention" : e.to}">${e.type === "intervention" ? "intervention" : e.from + " -> " + e.to}</span></td><td>${e.cause}</td><td>${e.rule}</td></tr>`).join("");
+    comparePanel.hidden = true;
+  } catch (err) { alert(err.message); }
+}
+
+async function compare() {
+  try {
+    await run();
+    const r = await api("/api/compare", scenario());
+    document.querySelector("#options tbody").innerHTML = r.options.map(o => o.feasible
+      ? `<tr class="${o.rank === 1 ? "best" : ""}"><td>${o.rank}</td><td>${o.label}</td><td>${money(o.impact.total_unserved_service_person_hours)} (${o.avoided_unserved_pct}% avoided)</td><td>${o.impact.critical_facility_outage_hours}</td><td>${o.impact.recovered_within_horizon ? "hour " + o.impact.recovery_hour : "not within horizon"}</td><td>${money(o.cost)}</td><td>${o.score}</td></tr>`
+      : `<tr><td>-</td><td>${o.label}</td><td colspan="5"><span class="tag failed">infeasible</span> ${o.reason}</td></tr>`).join("");
+    explanation.textContent = r.explanation;
+    comparePanel.hidden = false;
+  } catch (err) { alert(err.message); }
+}
+
+(async () => {
+  network = await api("/api/network");
+  assetList.innerHTML = network.assets.map(a =>
+    `<label><input type="checkbox" value="${a.id}" ${a.id === "S1" ? "checked" : ""}> ${a.id} - ${a.name}</label>`).join("");
+  drawMap();
+  hour.oninput = () => showHour(+hour.value);
+  document.getElementById("run").onclick = run;
+  document.getElementById("compare").onclick = compare;
+  run();
+})();
+</script>
+</body>
+</html>
