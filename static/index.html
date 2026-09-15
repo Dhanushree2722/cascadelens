@@ -79,12 +79,18 @@ let network, timeline = [];
 
 async function api(path, body) {
   const res = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)} : {});
-  if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))).detail;
+    // FastAPI returns a string for HTTPException and a list of {loc,msg} for validation errors.
+    const msg = Array.isArray(detail) ? detail.map(d => `${d.loc.slice(1).join(".")}: ${d.msg}`).join("\n") : detail;
+    throw new Error(msg || res.statusText);
+  }
   return res.json();
 }
 
 function scenario() {
   const failed = [...document.querySelectorAll("#assetList input:checked")].map(i => i.value);
+  if (!failed.length) throw new Error("Select at least one asset to fail.");
   return {hazard: hazard.value, severity: severity.value, horizon_hours: +horizon.value, failed_assets: failed};
 }
 
