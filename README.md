@@ -19,5 +19,7 @@ Open http://127.0.0.1:8000, pick failed assets, run, drag the hour slider, then
 - API: `app/main.py` (`/api/network`, `/api/simulate`, `/api/compare`)
 - UI: `static/index.html`
 
+Deployment (Vercel / Render / local demo): see [DEPLOY.md](DEPLOY.md).
+
 Limitations: synthetic data, simplified rules, template explanation (no LLM), in-memory only.
 Not validated for real emergency operations.
